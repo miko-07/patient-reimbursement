@@ -1,0 +1,406 @@
+---
+title: "STAT 425 Applied Regression and Design - Fall 2020"
+author: "Young Ho Yoo, Zhaohong Wang, Michael Zhu, Kayla Winfrey, Jiaqi Tian"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Final Project
+### Posted: Friday November. 6
+### Due: Friday December. 11
+#### Naveen N. Narisetty, naveen@illinois.edu
+
+
+
+# 1. Introduction
+
+The primary purpose of the project is finding the relationship between risk adjuster's status and amount of reimbursement.
+
+Used model: 
+
+## 1-1. Installed Packages
+
+```{r installed packages, warning=FALSE}
+library(readr)
+library(tidyverse)
+library(MASS)
+library(nortest)
+```
+
+## 1-2. Data
+
+The data is initially used to detect medical fraud, but I thought this data is useful to see how amount of reimbursement is changed by patient's status(age, diseases)
+The data was collected 2009 December 31.
+
+```{r}
+bene <- read_csv("Data/Train_Beneficiarydata-1542865627584.csv")
+ip <- read_csv("Data/Train_Inpatientdata-1542865627584.csv")
+op <- read_csv("Data/Train_Outpatientdata-1542865627584.csv")
+```
+
+source: https://www.kaggle.com/rohitrox/healthcare-provider-fraud-detection-analysis
+
+
+## 1-3. Modifying Data
+
+I change categorical variables from (1 = No, 2 = Yes) to (0 = No, 1 = Yes)
+Then, I take out unnecessary variables from the data.
+
+```{r}
+bene[, 4] <- ifelse(bene[, 4] == 1, 0, 1)
+bene[, 11:21] <- ifelse(bene[, 11:21] == 1, 0, 1)
+
+bene <- bene[, c(1:5, 11:21)]
+ip <- ip[, c(1:2, 5:6, 15:24)]
+op <- op[, c(1:2, 5:6, 10:19)]
+patients <- rbind(ip, op)
+```
+
+
+# 2. Variable Selection
+
+Now, I want to see how amount of reimbursement is affected by each variables of data.
+
+
+## 2-1. Age
+
+Let's see relationship between age and amount of reimbursement.
+
+While age of patients is not given, we can calculate based on Date of Birth.
+
+```{r}
+time1 <- as.Date("2009-12-31")
+bene <- mutate(bene, age = ifelse(is.na(bene$DOD), round(difftime(time1, bene$DOB) / 365, 0), round(difftime(bene$DOD, bene$DOB) / 365, 0)))
+```
+
+Now, let's see distribution of patients' age.
+
+```{r}
+summary(bene$age)
+hist(bene$age)
+new_age = cut(bene$age, breaks = c(25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,105))
+freq = table(new_age)
+freq
+piepercent<- paste(round(100*freq/sum(freq), 2), "%")
+pie1=pie(freq,labels = piepercent,main="Pie chart of age distribution",col = rainbow(length(freq)))
+legend("bottomright",c("25-30", "30-35","35-40","40-45","45-50","50-55","55-60","60-65","65-70","70-75","75-80","80-85","85-90","90-95","95-100","100-105"),cex=0.6,fill=rainbow(length(freq))) 
+```
+
+The youngest patient is 26 years old, and oldest patient is 101 years old.
+
+In histogram plot, we can see number of patients dramatically increased at 65.
+
+In the pie chart, we can see most patients are in age group 65 to 90. 
+
+In terms of medical policy, people can get advantage of medicare and medicaid after 65 years old.
+
+Therefore, it is reasonable that patients who over 65 get reimbursement more frequently than patients who under 65.
+
+
+Due to there are wide range of ages, I divided it five groups: 0-65, 66-75, 76-85, 86-95, 96+.
+
+
+```{r}
+bene <- bene %>% mutate(age_group = cut(bene$age, breaks = c(0, 65, 75, 85, 95, Inf), labels = c("0-65", "66-75", "76-85", "86-95", "96+")))
+```
+
+Now, let's see significance of each age groups.
+
+```{r}
+bene <- bene %>% mutate(age_group = cut(bene$age, breaks = c(0, 65, 75, 85, 95, Inf), labels = c("0-65", "66-75", "76-85", "86-95", "96+")))
+
+bene_patients <- merge(bene, patients, by = "BeneID")
+
+model_age <- lm(InscClaimAmtReimbursed ~ factor(age_group), data=bene_patients)
+
+par(mfrow = c(2, 2))
+plot(model_age)
+
+summary(model_age)
+
+```
+
+The Normal Q-Q plot suggests that the residual is heavy-tailed.
+
+According to the summary, age group 86-95 and 96+ have the p-value less than 0.05. It implies these two groups are significant to the amount of reimbursement.
+
+## 2-2. Disease
+
+Let's see how each diseases affect the amount of reimbursement.
+
+In this time, CCI(Charlson Comorbidity Index) is being used to determine status of patients.
+
+There are 17 different CCI groups, and each groups are identified by diagnosis codes in the data.
+
+source:http://mchp-appserv.cpe.umanitoba.ca/Upload/SAS/_CharlsonICD9CM.sas.txt 
+
+```{r, warning = FALSE}
+patients$DiagnosisCode <- apply(patients[ , 5:14] , 1 , paste , collapse = "#")
+
+patients <- patients %>% mutate(CC_GRP_1 = ifelse(str_detect(patients$DiagnosisCode, c("410", "412")), 1, 0)) 
+patients <- patients %>% mutate(CC_GRP_2 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c("39891","40201","40211","40291",'40401','40403','40411','40413','40491','40493',                                                                                     '4254','4255','4257','4258','4259','428')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_3 = ifelse(str_detect(patients$DiagnosisCode,
+                                                             c('0930','4373','440','441','4431','4432','4438','4439','4471','5571','5579','V434')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_4 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c('36234','430','431','432','433','434','435','436','437','438')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_5 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c('290','2941','3312')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_6 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c('4168','4169','490','491','492','493','494','495','496','500','501','502','503',
+                                                               '504','505','5064','5081','5088')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_7 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c('4465','7100','7101','7102','7103','7104','7140','7141','7142','7148','725')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_8 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                             c('531','532','533','534')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_9 = ifelse(str_detect(patients$DiagnosisCode,
+                                                             c('07022','07023','07032','07033','07044','07054','0706','0709','570','571','5733',
+                                                               '5734','5738','5739','V427')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_10 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('2500','2501','2502','2503','2508','2509')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_11 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('2504','2505','2506','2507')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_12 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('3341','342','343','3440','3441','3442','3443','3444','3445','3446','3449')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_13 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('40301','40311','40391','40402','40403','40412','40413','40492','40493','582',
+                                                                '5830','5831','5832','5834','5836','5837','585','586','5880','V420','V451','V56')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_14 = ifelse(str_detect(patients$DiagnosisCode,
+                                                              c('140','141','142','143','144','145','146','147','148','149','150','151','152','153',
+                                                                '154','155','156','157','158','159','160','161','162','163','164','165','170','171',
+                                                                '172','174','175','176','179','180','181','182','183','184','185','186','187','188',
+                                                                '189','190','191','192','193','194','195','200','201','202','203','204','205','206',
+                                                                                        '207','208','2386')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_15 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('4560','4561','4562','5722','5723','5724','5728')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_16 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('196','197','198','199')), 1, 0))
+patients <- patients %>% mutate(CC_GRP_17 = ifelse(str_detect(patients$DiagnosisCode, 
+                                                              c('042','043','044')), 1, 0))
+```
+
+
+I made new data frame to show one diagnosis for each patients.
+
+```{r}
+patients_diagcode <- aggregate(list(CC_GRP_1 = patients$CC_GRP_1, CC_GRP_2 = patients$CC_GRP_2, CC_GRP_3 = patients$CC_GRP_3, CC_GRP_4 = patients$CC_GRP_4, 
+                                    CC_GRP_5 = patients$CC_GRP_5, CC_GRP_6 = patients$CC_GRP_6, CC_GRP_7 = patients$CC_GRP_7, CC_GRP_8 = patients$CC_GRP_8, 
+                                    CC_GRP_9 = patients$CC_GRP_9, CC_GRP_10 = patients$CC_GRP_10, CC_GRP_11 = patients$CC_GRP_11, CC_GRP_12 = patients$CC_GRP_12,
+                                    CC_GRP_13 = patients$CC_GRP_13, CC_GRP_14 = patients$CC_GRP_14, CC_GRP_15 = patients$CC_GRP_15,
+                                    CC_GRP_16 = patients$CC_GRP_16, CC_GRP_17 = patients$CC_GRP_17), by = list(BeneID = patients$BeneID), FUN = max)
+```
+
+
+Then, I calculated weighted score of CCI.
+
+Here is the formula for weighted score: wgtcc = sum(of ccgrp1-ccgrp10) + ccgrp11 * 2 + ccgrp12 * 2 + ccgrp13 * 2 + ccgrp14 * 2 + ccgrp15 * 3 + ccgrp16 * 6 + ccgrp17 *6
+
+Source: http://mchp-appserv.cpe.umanitoba.ca/Upload/SAS/Calculating_the_Charlson_Comorbidity_Index_Score.sas.txt
+
+```{r}
+patients_diagcode <- patients_diagcode %>% mutate(wgtcc = (CC_GRP_1 + CC_GRP_2 + CC_GRP_3 + CC_GRP_4 + CC_GRP_5 + CC_GRP_6 + CC_GRP_7 + CC_GRP_8 + CC_GRP_9 + 
+                                                           CC_GRP_10 + CC_GRP_11 * 2 + CC_GRP_13 * 2 + CC_GRP_14 * 2 + CC_GRP_15 * 3 + CC_GRP_16 * 6 + CC_GRP_17 * 6))
+```
+
+Now, I merged two data frames with bene data.
+
+One is sum of reimbursement, and second is maximum weighted score of CCI.
+
+```{r}
+patients_reimburse <- aggregate(list(InscClaimAmtReimbursed = patients$InscClaimAmtReimbursed), by = list(BeneID = patients$BeneID), FUN = sum)
+
+bene_diagcode <- merge(bene, patients_reimburse, by = "BeneID")
+
+bene_diagcode <- merge(bene_diagcode, patients_diagcode[, c(1, 19)], by = "BeneID")
+```
+
+Now, figure out significances of each diagnosis.
+
+```{r}
+model_disease <- lm(InscClaimAmtReimbursed ~ ChronicCond_Alzheimer + ChronicCond_Heartfailure + ChronicCond_KidneyDisease + 
+                      ChronicCond_Cancer + ChronicCond_ObstrPulmonary + ChronicCond_Depression + ChronicCond_Diabetes + ChronicCond_IschemicHeart + 
+                      ChronicCond_Osteoporasis + ChronicCond_rheumatoidarthritis + ChronicCond_stroke + wgtcc, data=bene_diagcode)
+summary(model_disease)
+
+par(mfrow = c(2, 2))
+plot(model_disease)
+
+par(mfrow = c(1, 2))
+qqnorm(resid(model_disease))
+hist(resid(model_disease)[resid(model_disease) > -20000 & resid(model_disease) < 20000], main = "model_disease", xlab = "Residuals")
+```
+
+The Normal Q-Q plot and histogram suggest that the residualis heavy-tailed and skewed right.
+
+Fortunately, all variables have p-value less than 0.05. We can choose all diagnosis in our model.
+
+See diagnosis and age together.
+
+```{r}
+model_disease_age <- lm(InscClaimAmtReimbursed ~ factor(age_group) + ChronicCond_Alzheimer + ChronicCond_Heartfailure +
+                      ChronicCond_KidneyDisease + ChronicCond_Cancer + ChronicCond_ObstrPulmonary + ChronicCond_Depression +
+                      ChronicCond_Diabetes + ChronicCond_IschemicHeart + ChronicCond_Osteoporasis + ChronicCond_rheumatoidarthritis +
+                      ChronicCond_stroke + wgtcc, data=bene_diagcode)
+summary(model_disease_age)
+
+par(mfrow = c(2, 2))
+plot(model_disease_age)
+par(mfrow = c (1, 2))
+qqnorm(resid(model_disease_age))
+hist(resid(model_disease_age)[resid(model_disease_age) > -20000 & resid(model_disease_age) < 20000], main = "model_disease_age", xlab = "Residuals")
+
+```
+
+When we see diagnosis and age groups together, all diagnosis and two age gruops are significant.
+
+We can use age groups and diseases together in our model.
+
+
+# 3. Model Selection
+
+Let's see the boxcox plot without amount of reimbursement is 0.
+
+```{r}
+bene_without0 <- bene_diagcode[which(bene_diagcode$InscClaimAmtReimbursed != 0), ]
+
+
+boxcox(InscClaimAmtReimbursed ~ factor(age_group) + ChronicCond_Alzheimer + ChronicCond_Heartfailure +
+         ChronicCond_KidneyDisease + ChronicCond_Cancer + ChronicCond_ObstrPulmonary + ChronicCond_Depression +
+         ChronicCond_Diabetes + ChronicCond_IschemicHeart + ChronicCond_Osteoporasis + ChronicCond_rheumatoidarthritis +
+         ChronicCond_stroke + wgtcc, data=bene_without0)
+```
+
+
+According to the boxcox plot, we see lambda is close to 0, we can use either log linear model or poisson model.
+
+```{r}
+log_bene <- lm(log(InscClaimAmtReimbursed) ~ factor(age_group) + ChronicCond_Alzheimer + ChronicCond_Heartfailure + ChronicCond_KidneyDisease + ChronicCond_Cancer + 
+                     ChronicCond_ObstrPulmonary +ChronicCond_Depression + ChronicCond_Diabetes + ChronicCond_IschemicHeart + ChronicCond_Osteoporasis + 
+                    ChronicCond_rheumatoidarthritis + ChronicCond_stroke + wgtcc, data=bene_without0)
+```
+
+
+Also, this is poisson model
+
+```{r}
+poisson_bene <- glm(InscClaimAmtReimbursed ~ factor(age_group) + ChronicCond_Alzheimer + ChronicCond_Heartfailure + ChronicCond_KidneyDisease + ChronicCond_Cancer + 
+                      ChronicCond_ObstrPulmonary +ChronicCond_Depression + ChronicCond_Diabetes + ChronicCond_IschemicHeart + ChronicCond_Osteoporasis + 
+                      ChronicCond_rheumatoidarthritis + ChronicCond_stroke + wgtcc, data=bene_without0, family =poisson())
+```
+
+
+I need to check fitting of these models.
+
+When we check fitness, let's see MAE and RMSE of two models.
+
+## 3-1 Log-linear model
+
+```{r}
+RSS <- c(crossprod(log_bene$residuals))
+
+sig2 <- RSS / log_bene$df.residual
+
+bene_without0$prediction <- predict(log_bene)
+
+bene_without0$expected_reimbursement <- exp(bene_without0$prediction + (sig2 / 2))
+
+MAE <- sum(abs(bene_without0$InscClaimAmtReimbursed - bene_without0$expected_reimbursement)) / length(bene_without0);MAE
+
+RMSE <- sqrt(sum((bene_without0$InscClaimAmtReimbursed - bene_without0$expected_reimbursement)^2) / length(bene_without0));RMSE
+
+```
+
+In log-linear model, MAE is 33326236 and RMSE is 953647.
+
+Now, let's check poisson model
+
+## 3-2 Poisson model
+
+```{r}
+RSS <- c(crossprod(poisson_bene$residuals))
+
+sig2 <- RSS / poisson_bene$df.residual
+
+bene_without0$prediction <- predict(poisson_bene)
+
+bene_without0$expected_reimbursement <- exp(bene_without0$prediction)
+
+MAE <- sum(abs(bene_without0$InscClaimAmtReimbursed - bene_without0$expected_reimbursement)) / length(bene_without0);MAE
+
+RMSE <- sqrt(sum((bene_without0$InscClaimAmtReimbursed - bene_without0$expected_reimbursement)^2) / length(bene_without0));RMSE
+```
+
+In poisson model, MAE is 26730953 and RMSE is 660864.1
+
+Because poisson model shows significantly lower MAE and RMSE, we assume poisson model is more fitted model. 
+
+# 4. Model Diagnostics
+```{r}
+par(mfrow = c(2, 2))
+plot(poisson_bene)
+plot(log_bene)
+```
+According to the diagnostic plots of each model, poisson model is not doing well which may inply the violence of linearity, normality, Homoscedasticity of errors assumptions. While the plot of log transformed model looks a lot better. The residuals are close to 0 and standardized residuals are mostly less than 2. So, I think, the log transformed model does better in all the assumptions.
+```{r}
+# Check residuals
+par(mfrow = c(1, 2))
+hist(resid(poisson_bene)[resid(poisson_bene)>-500 & resid(poisson_bene)<500],
+     xlab   = "Residuals",
+     main   = "poisson model",
+     col    = "darkorange",
+     border = "dodgerblue",
+     breaks = 30
+  )
+hist(resid(log_bene),
+     xlab   = "Residuals",
+     main   = "log transfer model",
+     col    = "darkorange",
+     border = "dodgerblue",
+     breaks = 20)
+```
+
+```{r}
+# Check the normality assumption
+ad.test(resid(poisson_bene))
+qqnorm(resid(poisson_bene))
+qqline(resid(poisson_bene), col = "dodgerblue", lwd = 2)
+ad.test(resid(log_bene))
+qqnorm(resid(log_bene))
+qqline(resid(log_bene), col = "dodgerblue", lwd = 2)
+
+```
+From both the noramal QQ plots of poisson model and log transformed model, they both are not good. And the normality tests confirm that result as well that normality assumptions might be violated. It looks like log transformed model does better in the normality test and normal QQ plot. 
+
+
+# 5. Conclusion
+
+The two models that we choose are both imperfect. The MAE and RMSE of the poisson are lower. But from the Scale-Location plot of the poisson, we can notice that there are heteroskedasticity. By comparing the Residual vs Leverage plots, we can see that the outliers of log transformed model are more significant than those in poisson model. The fact that the diffierence of RMSE is greater than that of MAE from two models also support that outliers affact the log transformed mode much. 
+
+It's hard to choose which one is the best model, since the data is from real world. So, it's probably impossible for construct a perfect model. According to the poisson model and log transformed model, we believe they have their own pros and cons. Poisson model has lower MAE and RMSE while the log transformed model looks better in plots. So, we believe that each of the model could be considered to use or a combined consideration might be better. For future improvement, we should detect and delete the outliers and compare the two models again.
+
+
+
+```{r}
+summary(poisson_bene)
+summary(log_bene)
+```
+
+
+
+
+# Citation
+
+fitting method
+http://eds.a.ebscohost.com.proxy2.library.illinois.edu/eds/detail/detail?vid=0&sid=23ca4f37-540f-466e-9fcf-5ed6c3ffe132%40sessionmgr4006&bdata=JnNpdGU9ZWRzLWxpdmUmc2NvcGU9c2l0ZQ%3d%3d#AN=edselc.2-52.0-0042924144&db=edselc
+
+log-linear model
+https://www.r-bloggers.com/2013/08/forecasting-from-log-linear-regressions/
+
+RMSE and MAE
+https://www.datatechnotes.com/2019/02/regression-model-accuracy-mae-mse-rmse.html
+
